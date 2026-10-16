@@ -1,3 +1,4 @@
+%%writefile main.py
 from enum import Enum
 import joblib
 import numpy as np
@@ -8,22 +9,24 @@ from tensorflow.keras.models import load_model
 
 app = FastAPI(title="Military Predictive Logistics API")
 
-# Load models on startup
+# Load models and column schema on startup
 xgb_model = joblib.load('xgb_risk_model.pkl')
 scaler = joblib.load('feature_scaler.pkl')
 lstm_model = load_model('lstm_demand_model.h5')
 
-# Define clean Enum classes for dropdown selection in Swagger UI
+with open("columns.txt", "r") as f:
+    MODEL_COLUMNS = [line.strip() for line in f.readlines()]
+
+# Define clean Enum classes matching your training dataset's exact category names
 class SectorEnum(str, Enum):
-    NORTHERN = "Northern Command"
-    EASTERN = "Eastern Command"
-    WESTERN = "Western Command"
-    SOUTHERN="Southern command"
+    NORTHERN = "High Altitude (Eastern Ladakh)"
+    WESTERN = "Desert Sector (Rajasthan)"
+    SIACHEN = "High Altitude (Siachen Logistics Node)"
+
 class SupplyCategoryEnum(str, Enum):
-    FUEL = "Fuel"
-    AMMUNITION = "Ammunition"
-    RATIONS = "Rations"
-    MEDICAL = "Medical"
+    FUEL = "POL (Fuel, Oil, Lubricants)"
+    MEDICAL = "Medical Supplies & Spare Parts"
+    RATIONS = "Rations & Water"
 
 # Define request body using the Enums
 class ConvoyData(BaseModel):
@@ -33,22 +36,44 @@ class ConvoyData(BaseModel):
     terrain_difficulty_score: float
     route_disruption_active: int
     transport_capacity_util_pct: float
-
+    
     sector: SectorEnum = Field(..., description="Select the active military sector command")
     supply_category: SupplyCategoryEnum = Field(..., description="Select the category of supplies being transported")
 
 @app.post("/predict-risk")
 def predict_convoy_risk(data: ConvoyData):
-    # Convert input to dictionary (Enum values automatically serialize cleanly)
-    input_dict = data.dict()
-    input_df = pd.DataFrame([input_dict])
-    input_encoded = pd.get_dummies(input_df)
-
+    # Create a zero-filled DataFrame matching the exact columns the model was trained on
+    input_encoded = pd.DataFrame(0, index=[0], columns=MODEL_COLUMNS)
+    
+    # Fill in numerical inputs safely
+    if 'current_stock_days' in input_encoded.columns:
+        input_encoded['current_stock_days'] = data.current_stock_days
+    if 'daily_consumption_rate' in input_encoded.columns:
+        input_encoded['daily_consumption_rate'] = data.daily_consumption_rate
+    if 'weather_severity_index' in input_encoded.columns:
+        input_encoded['weather_severity_index'] = data.weather_severity_index
+    if 'terrain_difficulty_score' in input_encoded.columns:
+        input_encoded['terrain_difficulty_score'] = data.terrain_difficulty_score
+    if 'route_disruption_active' in input_encoded.columns:
+        input_encoded['route_disruption_active'] = data.route_disruption_active
+    if 'transport_capacity_util_pct' in input_encoded.columns:
+        input_encoded['transport_capacity_util_pct'] = data.transport_capacity_util_pct
+        
+    # Activate the exact one-hot encoded categorical columns matching user selection
+    sector_col = f"sector_{data.sector.value}"
+    if sector_col in input_encoded.columns:
+        input_encoded[sector_col] = 1
+        
+    category_col = f"supply_category_{data.supply_category.value}"
+    if category_col in input_encoded.columns:
+        input_encoded[category_col] = 1
+    
+    # Run prediction
     risk_prob = float(xgb_model.predict_proba(input_encoded)[:, 1][0])
     risk_label = int(xgb_model.predict(input_encoded)[0])
-
+    
     status = "HIGH RISK - Immediate Resupply Required" if risk_label == 1 else "ON TRACK"
-
+    
     return {
         "risk_probability": round(risk_prob, 2),
         "status": status,
@@ -58,15 +83,14 @@ def predict_convoy_risk(data: ConvoyData):
 @app.post("/forecast-demand")
 def forecast_demand(past_consumption_values: list[float]):
     if len(past_consumption_values) < 14:
-        return {"error": "Please provide at least 14 days of historical data."}
-
-    recent_data = np.array(past_consumption_values[-14:]).reshape(-1, 1)
-    scaled_input = recent_data / 500.0
-    X_input = scaled_input.reshape(1, 14, 1)
-
-    predicted_scaled = lstm_model.predict(X_input)
-    predicted_value = float(predicted_scaled[0][0]) * 500.0
-
+        return {"error": "Please provide at least 14 days of historical data"}
+    
+    arr = np.array(past_consumption_values[-14:]).reshape(1, 14, 1)
+    scaled_input = scaler.transform(arr.reshape(-1, 1)).reshape(1, 14, 1)
+    
+    pred_scaled = lstm_model.predict(scaled_input)
+    pred_value = scaler.inverse_transform(pred_scaled)[0][0]
+    
     return {
-        "forecasted_consumption_next_day": round(predicted_value, 2)
+        "forecasted_demand_next_day": round(float(pred_value), 2)
     }
