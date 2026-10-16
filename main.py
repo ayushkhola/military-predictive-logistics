@@ -1,6 +1,4 @@
-
-        
-  from enum import Enum
+from enum import Enum
 import joblib
 import numpy as np
 import pandas as pd
