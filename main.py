@@ -1,4 +1,4 @@
-%%writefile main.py
+
 from enum import Enum
 import joblib
 import numpy as np
