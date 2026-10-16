@@ -69,8 +69,12 @@ def predict_convoy_risk(data: ConvoyData):
         input_encoded[category_col] = 1
     
     # Run prediction
-    risk_prob = float(xgb_model.predict_proba(input_encoded)[:, 1][0])
-    risk_label = int(xgb_model.predict(input_encoded)[0])
+   # Safely extract probabilities and predictions regardless of shape
+    probs = xgb_model.predict_proba(input_encoded)
+    risk_prob = float(probs[0][1] if len(probs.shape) == 2 and probs.shape[1] > 1 else probs[0])
+    
+    preds = xgb_model.predict(input_encoded)
+    risk_label = int(preds[0])
     
     status = "HIGH RISK - Immediate Resupply Required" if risk_label == 1 else "ON TRACK"
     
